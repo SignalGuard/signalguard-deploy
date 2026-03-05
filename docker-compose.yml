@@ -31,11 +31,11 @@ services:
       context: ../signalguard-ux
       dockerfile: Dockerfile
       args:
-        - VITE_API_BASE_URL=http://api.signalguard.local/api/v1
-        - VITE_PLATFORM_URL=http://hiring.signalguard.local
-        - VITE_ADMIN_URL=http://admin.signalguard.local
-        - VITE_IDE_URL=http://ide.signalguard.local
-        - VITE_AUTH_URL=http://auth.signalguard.local
+        - VITE_API_BASE_URL=http://api.signalguard.test/api/v1
+        - VITE_PLATFORM_URL=http://hiring.signalguard.test
+        - VITE_ADMIN_URL=http://admin.signalguard.test
+        - VITE_IDE_URL=http://ide.signalguard.test
+        - VITE_AUTH_URL=http://auth.signalguard.test
     container_name: sg-platform-ux
     networks:
       - sg-network
