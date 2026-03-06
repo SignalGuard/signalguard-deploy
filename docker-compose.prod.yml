@@ -1,6 +1,7 @@
 version: '3.8'
 
 services:
+  # Edge Proxy - Lean Profile (0.25 CPU, 256MB RAM)
   edge-nginx:
     image: nginx:alpine
     container_name: sg-edge-nginx
@@ -12,28 +13,48 @@ services:
       - "80:80"
       - "443:443"
     networks:
-      - sg-network
+      - signalguard-network
     restart: unless-stopped
     deploy:
       resources:
         limits:
+          cpus: '0.25'
           memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
     depends_on:
       - backend-api
       - platform-ux
       - marketing-web
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
+  # Marketing Web - Lean Profile (0.25 CPU, 256MB RAM)
   marketing-web:
     image: ghcr.io/signalguard/marketing-web:latest
     container_name: sg-marketing-web
     networks:
-      - sg-network
+      - signalguard-network
     restart: unless-stopped
     deploy:
       resources:
         limits:
+          cpus: '0.25'
           memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
+  # Platform UX - Lean Profile (0.5 CPU, 512MB RAM)
   platform-ux:
     image: ghcr.io/signalguard/platform-ux:latest
     container_name: sg-platform-ux
@@ -44,160 +65,295 @@ services:
       - VITE_IDE_URL=https://ide.signalguard.dev
       - VITE_AUTH_URL=https://auth.signalguard.dev
     networks:
-      - sg-network
+      - signalguard-network
     restart: unless-stopped
     deploy:
       resources:
         limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.2'
           memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
+  # PostgreSQL - Performance Tuned (1.0 CPU, 2GB RAM)
   postgres:
     image: postgres:15-alpine
     container_name: sg-postgres
-    command: [ "postgres", "-c", "shared_buffers=256MB", "-c", "effective_cache_size=768MB", "-c", "work_mem=8MB", "-c", "maintenance_work_mem=64MB", "-c", "min_wal_size=1GB", "-c", "max_wal_size=4GB", "-c", "checkpoint_completion_target=0.9", "-c", "wal_buffers=16MB", "-c", "default_statistics_target=100", "-c", "random_page_cost=1.1", "-c", "effective_io_concurrency=200", "-c", "max_connections=100" ]
+    command: [
+      "postgres",
+      "-c", "shared_buffers=512MB",
+      "-c", "effective_cache_size=1536MB",
+      "-c", "work_mem=16MB", 
+      "-c", "maintenance_work_mem=128MB",
+      "-c", "min_wal_size=1GB",
+      "-c", "max_wal_size=4GB",
+      "-c", "checkpoint_completion_target=0.9",
+      "-c", "wal_buffers=16MB",
+      "-c", "default_statistics_target=100",
+      "-c", "random_page_cost=1.1",
+      "-c", "effective_io_concurrency=200",
+      "-c", "max_connections=50",
+      "-c", "log_statement=none",
+      "-c", "log_min_duration_statement=1000",
+      "-c", "log_checkpoints=on",
+      "-c", "log_connections=off",
+      "-c", "log_disconnections=off"
+    ]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-signalguard}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
       POSTGRES_DB: ${POSTGRES_DB:-signalguard}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
-      - sg-network
-    # Not exposing 5432 publicly in production
+      - signalguard-network
     restart: unless-stopped
     deploy:
       resources:
         limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
           memory: 1G
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U signalguard" ]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U signalguard"]
+      interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
+  # Redis - Memory Optimized (0.25 CPU, 512MB RAM)
   redis:
     image: redis:8.2.4-alpine
     container_name: sg-redis
-    command: [ "redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", "900", "1", "300", "10", "60", "100" ]
+    command: [
+      "redis-server",
+      "--maxmemory", "384mb",
+      "--maxmemory-policy", "allkeys-lru",
+      "--save", "900", "1", "300", "10", "60", "100",
+      "--tcp-keepalive", "60",
+      "--timeout", "300",
+      "--databases", "16",
+      "--appendonly", "yes",
+      "--appendfsync", "everysec"
+    ]
     volumes:
       - redisdata:/data
     networks:
-      - sg-network
-    # Not exposing 6379 publicly in production
+      - signalguard-network
     restart: unless-stopped
     deploy:
       resources:
         limits:
+          cpus: '0.25'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
           memory: 256M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
+  # Backend API - Performance Tuned (1.0 CPU, 2GB RAM)
   backend-api:
     image: ghcr.io/signalguard/backend-api:latest
     container_name: sg-backend-api
-    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000" ]
+    command: [
+      "uvicorn", "app.main:app",
+      "--host", "0.0.0.0",
+      "--port", "8000",
+      "--workers", "2",
+      "--loop", "uvloop",
+      "--http", "httptools",
+      "--access-log",
+      "--log-level", "info"
+    ]
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-signalguard}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-signalguard}
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_MODE=${STORAGE_MODE:-FILESYSTEM}
       - BASE_STORAGE_PATH=/data/storage
-      - USE_LOCAL_SANDBOX=true
       - ASSESSMENTS_ROOT=/assessments/assessments
       - ASSESSMENTS_REPO=/assessments
       - HEALTH_PORT=9100
       - SERVICE_TYPE=api
       - GEMINI_KEY=${GEMINI_KEY}
+      # Production Sandbox Configuration
+      - SG_SANDBOX_MAX_GLOBAL_CONTAINERS=3
+      - SG_SANDBOX_SESSION_MAX_RUNS=2
+      - SG_SANDBOX_MAX_QUEUE=10
+      - SG_SANDBOX_DEFAULT_CPU_LIMIT=0.5
+      - SG_SANDBOX_DEFAULT_MEMORY_LIMIT_MB=256
+      - SG_SANDBOX_CANDIDATE_TIMEOUT=120
+      - SG_SANDBOX_EVALUATION_TIMEOUT=600
+      - SG_SANDBOX_REPLAY_TIMEOUT=900
     volumes:
       - sg-storage:/data/storage
-      - ${DOCKER_HOST_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - sg-assessments:/assessments:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     networks:
-      - sg-network
+      - signalguard-network
     restart: unless-stopped
     deploy:
       resources:
         limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
           memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9100/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
+  # Dramatiq Worker - Execution Pool (1.0 CPU, 8GB RAM Buffer)
   worker:
     image: ghcr.io/signalguard/worker:latest
     container_name: sg-worker
-    command: [ "dramatiq", "app.worker.tasks", "--processes", "1", "--threads", "4" ]
+    command: [
+      "dramatiq", "app.worker.priority_queues",
+      "--processes", "1",
+      "--threads", "2",
+      "--queues", "candidate_execution,evaluation,replay,maintenance",
+      "--path", "/app"
+    ]
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-signalguard}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-signalguard}
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_MODE=${STORAGE_MODE:-FILESYSTEM}
       - BASE_STORAGE_PATH=/data/storage
-      - USE_LOCAL_SANDBOX=true
       - ASSESSMENTS_ROOT=/assessments/assessments
       - ASSESSMENTS_REPO=/assessments
       - HEALTH_PORT=9100
       - SERVICE_TYPE=worker
+      # Production Sandbox Configuration
+      - SG_SANDBOX_MAX_GLOBAL_CONTAINERS=3
+      - SG_SANDBOX_SESSION_MAX_RUNS=2
+      - SG_SANDBOX_MAX_QUEUE=10
+      - SG_SANDBOX_DEFAULT_CPU_LIMIT=0.5
+      - SG_SANDBOX_DEFAULT_MEMORY_LIMIT_MB=256
+      - SG_SANDBOX_CANDIDATE_TIMEOUT=120
+      - SG_SANDBOX_EVALUATION_TIMEOUT=600
+      - SG_SANDBOX_REPLAY_TIMEOUT=900
+      # Docker Host Configuration
+      - SANDBOX_PARENT_CONTAINER=${HOSTNAME}
     volumes:
       - sg-storage:/data/storage
-      - ${DOCKER_HOST_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - sg-assessments:/assessments:ro
+    depends_on:
+      - postgres
+      - redis
+      - backend-api
+    networks:
+      - signalguard-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 8G
+        reservations:
+          cpus: '0.5'
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9100/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # Scavenger Service - Maintenance (0.25 CPU, 256MB RAM)
+  scavenger:
+    image: ghcr.io/signalguard/worker:latest
+    container_name: sg-scavenger
+    command: [
+      "python", "-c",
+      "import time; from app.worker.enhanced_scavenger import enhanced_scavenge_orphans; 
+       while True: 
+         try: enhanced_scavenge_orphans(); print('Scavenger run completed'); 
+         except Exception as e: print(f'Scavenger error: {e}'); 
+         time.sleep(300)"
+    ]
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-signalguard}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-signalguard}
+      - REDIS_URL=redis://redis:6379/0
+      - SG_SANDBOX_MAX_GLOBAL_CONTAINERS=3
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - postgres
       - redis
     networks:
-      - sg-network
+      - signalguard-network
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 1G
-
-  runner:
-    image: ghcr.io/signalguard/runner:latest
-    container_name: sg-runner
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - STORAGE_MODE=${STORAGE_MODE:-FILESYSTEM}
-      - BASE_STORAGE_PATH=/data/storage
-      - HEALTH_PORT=9100
-      - SERVICE_TYPE=runner
-    volumes:
-      - sg-storage:/data/storage
-      - ${DOCKER_HOST_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
-    depends_on:
-      - postgres
-      - redis
-    networks:
-      - sg-network
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-
-  sandbox:
-    image: ghcr.io/signalguard/sandbox:latest
-    container_name: sg-sandbox
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - STORAGE_MODE=${STORAGE_MODE:-FILESYSTEM}
-      - BASE_STORAGE_PATH=/data/storage
-      - HEALTH_PORT=9100
-      - SERVICE_TYPE=sandbox
-    volumes:
-      - sg-storage:/data/storage
-      - ${DOCKER_HOST_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
-    networks:
-      - sg-network
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 1G
+          cpus: '0.25'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 networks:
-  sg-network:
-    name: sg-network
+  signalguard-network:
+    name: signalguard-network
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
 
 volumes:
   pgdata:
+    driver: local
   redisdata:
+    driver: local
   sg-storage:
+    driver: local
+  sg-assessments:
+    driver: local

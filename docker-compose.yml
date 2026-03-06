@@ -1,6 +1,7 @@
 version: '3.8'
 
 services:
+  # Edge Proxy - Lean Profile
   edge-nginx:
     image: nginx:alpine
     container_name: sg-edge-nginx
@@ -11,21 +12,32 @@ services:
       - "80:80"
       - "443:443"
     networks:
-      - sg-network
+      - signalguard-network
     depends_on:
       - backend-api
       - platform-ux
       - marketing-web
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
+  # Marketing Web - Lean Profile  
   marketing-web:
     build:
       context: ../signalguard-web
       dockerfile: Dockerfile
     container_name: sg-marketing-web
     networks:
-      - sg-network
-    # Exposed internally to the network for edge-nginx to proxy
+      - signalguard-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
+  # Platform UX - Lean Profile
   platform-ux:
     build:
       context: ../signalguard-ux
@@ -38,46 +50,100 @@ services:
         - VITE_AUTH_URL=http://auth.signalguard.test
     container_name: sg-platform-ux
     networks:
-      - sg-network
-    # Exposed internally to the network for edge-nginx to proxy
+      - signalguard-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
+  # PostgreSQL - Performance Tuned
   postgres:
     image: postgres:15-alpine
     container_name: sg-postgres
-    command: [ "postgres", "-c", "shared_buffers=256MB", "-c", "effective_cache_size=768MB", "-c", "work_mem=8MB", "-c", "maintenance_work_mem=64MB", "-c", "min_wal_size=1GB", "-c", "max_wal_size=4GB", "-c", "checkpoint_completion_target=0.9", "-c", "wal_buffers=16MB", "-c", "default_statistics_target=100", "-c", "random_page_cost=1.1", "-c", "effective_io_concurrency=200", "-c", "max_connections=100" ]
+    command: [
+      "postgres",
+      "-c", "shared_buffers=512MB",
+      "-c", "effective_cache_size=1536MB", 
+      "-c", "work_mem=16MB",
+      "-c", "maintenance_work_mem=128MB",
+      "-c", "min_wal_size=1GB",
+      "-c", "max_wal_size=4GB",
+      "-c", "checkpoint_completion_target=0.9",
+      "-c", "wal_buffers=16MB",
+      "-c", "default_statistics_target=100",
+      "-c", "random_page_cost=1.1",
+      "-c", "effective_io_concurrency=200",
+      "-c", "max_connections=50",
+      "-c", "log_statement=none",
+      "-c", "log_min_duration_statement=1000"
+    ]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-signalguard}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
       POSTGRES_DB: ${POSTGRES_DB:-signalguard}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
-      - sg-network
-    ports:
-      - "5432:5432"
+      - signalguard-network
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U signalguard" ]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U signalguard"]
+      interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
+  # Redis - Memory Optimized
   redis:
     image: redis:8.2.4-alpine
     container_name: sg-redis
-    command: [ "redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", "900", "1", "300", "10", "60", "100" ]
+    command: [
+      "redis-server",
+      "--maxmemory", "512mb",
+      "--maxmemory-policy", "allkeys-lru",
+      "--save", "900", "1", "300", "10", "60", "100",
+      "--tcp-keepalive", "60",
+      "--timeout", "300",
+      "--databases", "16"
+    ]
     volumes:
       - redisdata:/data
     networks:
-      - sg-network
-    ports:
-      - "6379:6379"
+      - signalguard-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
+  # Backend API - Performance Tuned
   backend-api:
     build:
       context: ../signalguard-backend
       dockerfile: Dockerfile.api
     container_name: sg-backend-api
-    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload" ]
+    command: [
+      "uvicorn", "app.main:app",
+      "--host", "0.0.0.0",
+      "--port", "8000",
+      "--workers", "2",
+      "--loop", "uvloop",
+      "--http", "httptools",
+      "--access-log",
+      "--log-level", "info"
+    ]
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-signalguard}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-signalguard}
       - REDIS_URL=redis://redis:6379/0
@@ -89,27 +155,48 @@ services:
       - HEALTH_PORT=9100
       - SERVICE_TYPE=api
       - GEMINI_KEY=${GEMINI_KEY}
+      # Sandbox Configuration
+      - SG_SANDBOX_MAX_GLOBAL_CONTAINERS=3
+      - SG_SANDBOX_SESSION_MAX_RUNS=2
+      - SG_SANDBOX_MAX_QUEUE=10
+      - SG_SANDBOX_DEFAULT_CPU_LIMIT=0.5
+      - SG_SANDBOX_DEFAULT_MEMORY_LIMIT_MB=256
     volumes:
       - sg-storage:/data/storage
-      - ${DOCKER_HOST_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock
       - ../signalguard-assessments:/assessments:ro
-      - ../signalguard-backend/app:/app/app
-      - ../signalguard-backend/database_schema:/app/database_schema
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     networks:
-      - sg-network
-    # Exposed internally to the network for edge-nginx to proxy
+      - signalguard-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9100/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
+  # Dramatiq Worker - Execution Pool
   worker:
     build:
       context: ../signalguard-backend
       dockerfile: Dockerfile.worker
     container_name: sg-worker
-    command: [ "dramatiq", "app.worker.tasks", "--processes", "1", "--threads", "4" ]
+    command: [
+      "dramatiq", "app.worker.tasks",
+      "--processes", "1",
+      "--threads", "2",
+      "--queues", "candidate_execution,evaluation,replay,maintenance",
+      "--path", "/app"
+    ]
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-signalguard}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-signalguard}
       - REDIS_URL=redis://redis:6379/0
@@ -120,65 +207,46 @@ services:
       - ASSESSMENTS_REPO=/assessments
       - HEALTH_PORT=9100
       - SERVICE_TYPE=worker
+      # Sandbox Configuration
+      - SG_SANDBOX_MAX_GLOBAL_CONTAINERS=3
+      - SG_SANDBOX_SESSION_MAX_RUNS=2
+      - SG_SANDBOX_MAX_QUEUE=10
+      - SG_SANDBOX_DEFAULT_CPU_LIMIT=0.5
+      - SG_SANDBOX_DEFAULT_MEMORY_LIMIT_MB=256
     volumes:
       - sg-storage:/data/storage
-      - ${DOCKER_HOST_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock
       - ../signalguard-assessments:/assessments:ro
-      - ../signalguard-backend/app:/app/app
-      - ../signalguard-backend/database_schema:/app/database_schema
     depends_on:
       - postgres
       - redis
+      - backend-api
     networks:
-      - sg-network
-
-  runner:
-    build:
-      context: ../signalguard-backend
-      dockerfile: Dockerfile.runner
-    container_name: sg-runner
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - STORAGE_MODE=${STORAGE_MODE:-FILESYSTEM}
-      - BASE_STORAGE_PATH=/data/storage
-      - HEALTH_PORT=9100
-      - SERVICE_TYPE=runner
-    volumes:
-      - sg-storage:/data/storage
-      - ${DOCKER_HOST_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
-      - ../signalguard-assessments:/assessments:ro
-      - ../signalguard-backend/app:/app/app
-    depends_on:
-      - postgres
-      - redis
-    networks:
-      - sg-network
-
-  sandbox:
-    build:
-      context: ../signalguard-backend
-      dockerfile: Dockerfile.sandbox
-    container_name: sg-sandbox
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - STORAGE_MODE=${STORAGE_MODE:-FILESYSTEM}
-      - BASE_STORAGE_PATH=/data/storage
-      - HEALTH_PORT=9100
-      - SERVICE_TYPE=sandbox
-    volumes:
-      - sg-storage:/data/storage
-      - ${DOCKER_HOST_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
-      - ../signalguard-assessments:/assessments:ro
-      - ../signalguard-backend/app:/app/app
-    networks:
-      - sg-network
+      - signalguard-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9100/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 networks:
-  sg-network:
-    name: sg-network
+  signalguard-network:
+    name: signalguard-network
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
 
 volumes:
   pgdata:
+    driver: local
   redisdata:
+    driver: local
   sg-storage:
+    driver: local
