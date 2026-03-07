@@ -85,26 +85,7 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: sg-postgres
-    command: [
-      "postgres",
-      "-c", "shared_buffers=512MB",
-      "-c", "effective_cache_size=1536MB",
-      "-c", "work_mem=16MB", 
-      "-c", "maintenance_work_mem=128MB",
-      "-c", "min_wal_size=1GB",
-      "-c", "max_wal_size=4GB",
-      "-c", "checkpoint_completion_target=0.9",
-      "-c", "wal_buffers=16MB",
-      "-c", "default_statistics_target=100",
-      "-c", "random_page_cost=1.1",
-      "-c", "effective_io_concurrency=200",
-      "-c", "max_connections=50",
-      "-c", "log_statement=none",
-      "-c", "log_min_duration_statement=1000",
-      "-c", "log_checkpoints=on",
-      "-c", "log_connections=off",
-      "-c", "log_disconnections=off"
-    ]
+    command: [ "postgres", "-c", "shared_buffers=512MB", "-c", "effective_cache_size=1536MB", "-c", "work_mem=16MB", "-c", "maintenance_work_mem=128MB", "-c", "min_wal_size=1GB", "-c", "max_wal_size=4GB", "-c", "checkpoint_completion_target=0.9", "-c", "wal_buffers=16MB", "-c", "default_statistics_target=100", "-c", "random_page_cost=1.1", "-c", "effective_io_concurrency=200", "-c", "max_connections=50", "-c", "log_statement=none", "-c", "log_min_duration_statement=1000", "-c", "log_checkpoints=on", "-c", "log_connections=off", "-c", "log_disconnections=off" ]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-signalguard}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
@@ -124,7 +105,7 @@ services:
           cpus: '0.5'
           memory: 1G
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U signalguard"]
+      test: [ "CMD-SHELL", "pg_isready -U signalguard" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -139,17 +120,7 @@ services:
   redis:
     image: redis:8.2.4-alpine
     container_name: sg-redis
-    command: [
-      "redis-server",
-      "--maxmemory", "384mb",
-      "--maxmemory-policy", "allkeys-lru",
-      "--save", "900", "1", "300", "10", "60", "100",
-      "--tcp-keepalive", "60",
-      "--timeout", "300",
-      "--databases", "16",
-      "--appendonly", "yes",
-      "--appendfsync", "everysec"
-    ]
+    command: [ "redis-server", "--maxmemory", "384mb", "--maxmemory-policy", "allkeys-lru", "--save", "900", "1", "300", "10", "60", "100", "--tcp-keepalive", "60", "--timeout", "300", "--databases", "16", "--appendonly", "yes", "--appendfsync", "everysec" ]
     volumes:
       - redisdata:/data
     networks:
@@ -164,7 +135,7 @@ services:
           cpus: '0.1'
           memory: 256M
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -179,16 +150,7 @@ services:
   backend-api:
     image: ghcr.io/signalguard/backend-api:latest
     container_name: sg-backend-api
-    command: [
-      "uvicorn", "app.main:app",
-      "--host", "0.0.0.0",
-      "--port", "8000",
-      "--workers", "2",
-      "--loop", "uvloop",
-      "--http", "httptools",
-      "--access-log",
-      "--log-level", "info"
-    ]
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--loop", "uvloop", "--http", "httptools", "--access-log", "--log-level", "info" ]
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-signalguard}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-signalguard}
       - REDIS_URL=redis://redis:6379/0
@@ -229,7 +191,7 @@ services:
           cpus: '0.5'
           memory: 1G
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9100/health"]
+      test: [ "CMD", "curl", "-f", "http://localhost:9100/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -244,13 +206,7 @@ services:
   worker:
     image: ghcr.io/signalguard/worker:latest
     container_name: sg-worker
-    command: [
-      "dramatiq", "app.worker.priority_queues",
-      "--processes", "1",
-      "--threads", "2",
-      "--queues", "candidate_execution,evaluation,replay,maintenance",
-      "--path", "/app"
-    ]
+    command: [ "dramatiq", "app.worker.priority_queues", "--processes", "1", "--threads", "2", "--queues", "candidate_execution", "evaluation", "replay", "maintenance", "--path", "/app" ]
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-signalguard}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-signalguard}
       - REDIS_URL=redis://redis:6379/0
@@ -291,7 +247,7 @@ services:
           cpus: '0.5'
           memory: 2G
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9100/health"]
+      test: [ "CMD", "curl", "-f", "http://localhost:9100/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -306,14 +262,7 @@ services:
   scavenger:
     image: ghcr.io/signalguard/worker:latest
     container_name: sg-scavenger
-    command: [
-      "python", "-c",
-      "import time; from app.worker.enhanced_scavenger import enhanced_scavenge_orphans; 
-       while True: 
-         try: enhanced_scavenge_orphans(); print('Scavenger run completed'); 
-         except Exception as e: print(f'Scavenger error: {e}'); 
-         time.sleep(300)"
-    ]
+    command: [ "python", "-c", "import time; from app.worker.enhanced_scavenger import enhanced_scavenge_orphans; while True: try: enhanced_scavenge_orphans(); print('Scavenger run completed'); except Exception as e: print(f'Scavenger error: {e}'); time.sleep(300)" ]
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-signalguard}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-signalguard}
       - REDIS_URL=redis://redis:6379/0
